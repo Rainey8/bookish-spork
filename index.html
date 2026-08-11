@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>מעקב תזונה יומי</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="theme-color" content="#3f6355" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="תזונה" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { font-family: 'Heebo', sans-serif; background: #fafaf9; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+// localStorage-backed shim so the component's window.storage calls work
+// unchanged outside of Claude — data lives only in this browser/device.
+window.storage = {
+  async get(key) {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) throw new Error("Key not found: " + key);
+    return { key, value: raw, shared: false };
+  },
+  async set(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+      return { key, value, shared: false };
+    } catch (e) {
+      return null;
+    }
+  },
+};
+
+// Small inline icon set (replaces lucide-react, which needs a bundler)
+const Check = ({ className, strokeWidth = 2 }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+const ChevronDown = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+const RotateCcw = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <polyline points="1 4 1 10 7 10" />
+    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+  </svg>
+);
+const Sunrise = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M17 18a5 5 0 0 0-10 0" />
+    <line x1="12" y1="2" x2="12" y2="9" />
+    <line x1="4.22" y1="10.22" x2="5.64" y2="11.64" />
+    <line x1="1" y1="18" x2="3" y2="18" />
+    <line x1="21" y1="18" x2="23" y2="18" />
+    <line x1="18.36" y1="11.64" x2="19.78" y2="10.22" />
+    <line x1="23" y1="22" x2="1" y2="22" />
+    <polyline points="8 6 12 2 16 6" />
+  </svg>
+);
+const Sun = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <circle cx="12" cy="12" r="5" />
+    <line x1="12" y1="1" x2="12" y2="3" />
+    <line x1="12" y1="21" x2="12" y2="23" />
+    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+    <line x1="1" y1="12" x2="3" y2="12" />
+    <line x1="21" y1="12" x2="23" y2="12" />
+    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+  </svg>
+);
+const Moon = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+  </svg>
+);
+const Sparkles = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+  </svg>
+);
+
+
+const THEME = {
+  amber: { chip: "bg-amber-100 text-amber-700", ring: "stroke-amber-500", solid: "bg-amber-500", dot: "bg-amber-500" },
+  emerald: { chip: "bg-emerald-100 text-emerald-700", ring: "stroke-emerald-500", solid: "bg-emerald-500", dot: "bg-emerald-500" },
+  indigo: { chip: "bg-indigo-100 text-indigo-700", ring: "stroke-indigo-500", solid: "bg-indigo-500", dot: "bg-indigo-500" },
+};
+
+const BREAKFAST_SLOTS = [
+  { key: "protein", label: "חלבון", choices: ["דנונה פרו 20 (גביע)", "משקה חלב מועשר בחלבון בטעם וניל (בקבוק גדול)"] },
+  { key: "carb", label: "פחמימה", choices: ["2 כפות גרנולה", "5 כפות שיבולת שועל יבשה"] },
+  { key: "fruit", label: "פרי", choices: ["תפוח גרנד סמית בינוני"], hint: "אפשר להחליף בכל פרי אחר" },
+];
+
+const LUNCH_SLOTS = [
+  {
+    key: "protein",
+    label: "חלבון",
+    choices: [
+      "חזה עוף מטוגן ללא שמן (2 יח׳ בינוניות)",
+      "כרע עוף ללא עצם עם עור, מבושל",
+      "פילה דג (מושט/לברק/דניס/טונה) 200 גרם",
+      "סלמון אפוי ללא שמן (150 גרם)",
+      "קציצות עוף/הודו, 4 יח׳ (כדור פינג פונג)",
+      "קציצות בקר, 3 יח׳ (כדור פינג פונג)",
+      "פרגיות (כף יד וחצי, כ-150 גרם)",
+      "כבד עוף (200 גרם)",
+      "בשר בקר (150 גרם)",
+    ],
+  },
+  {
+    key: "carb",
+    label: "פחמימה",
+    choices: [
+      "אורז בינוני לבן מבושל (1.5 כוס)",
+      "בורגול מבושל (2 כוסות)",
+      "תפוחי אדמה אפויים/מבושלים (2 יח׳ בינוניות)",
+      "בטטה אפויה/מבושלת (2 יח׳ בינוניות)",
+      "קינואה מבושלת (כמות דומה)",
+      "כוסמת מבושלת (כמות דומה)",
+      "פתיתים מבושלים (כמות דומה)",
+      "פסטה מבושלת (כמות דומה)",
+      "קוסקוס מבושל (כמות דומה)",
+      "עדשים מבושלות (כמות דומה)",
+      "אפונה מבושלת (כמות דומה)",
+      "שעועית לבנה/שחורה מבושלת (כמות דומה)",
+      "גרגירי חומוס מבושלים (כמות דומה)",
+    ],
+  },
+  { key: "veg1", label: "ירק", choices: ["מלפפון בינוני"], hint: "אפשר להחליף/להוסיף ירקות אחרים" },
+  { key: "veg2", label: "ירק נוסף", choices: ["עגבניה בינונית", "פלפל אדום"] },
+  { key: "fat", label: "שומן", choices: ["כף שטוחה שמן זית"] },
+];
+
+const DINNER_SLOTS = [
+  {
+    key: "bread",
+    label: "לחם",
+    choices: [
+      "2 פרוסות לחם חיטה מלאה",
+      "2 פרוסות לחם שיפון מלא",
+      "2 פרוסות לחם כוסמין מלא",
+      "לחמניית אצבע מחיטה מלאה",
+      "טורטיה מחיטה מלאה",
+      "6 פריכיות אורז",
+    ],
+    hint: "3 פריכיות אורז = פרוסת לחם אחת",
+  },
+  { key: "egg", label: "ביצה", choices: ["2 יח׳ חביתה גדולות", "2 ביצים קשות שלמות"] },
+  { key: "extra", label: "תוספת חלבון", choices: ["פחית טונה בשמן מסונן", "3 פרוסות גבינה צהובה 9%"] },
+  { key: "veg1", label: "ירק", choices: ["מלפפון בינוני"], hint: "אפשר להחליף/להוסיף ירקות אחרים" },
+  { key: "veg2", label: "ירק נוסף", choices: ["פלפל צהוב", "עגבניה בינונית"] },
+  { key: "fat", label: "שומן/רוטב", choices: ["כף שטוחה שמן זית", "כף טחינה גולמית משומשום מלא"] },
+];
+
+const SLOTS_BY_MEAL = { breakfast: BREAKFAST_SLOTS, lunch: LUNCH_SLOTS, dinner: DINNER_SLOTS };
+const MEAL_TOTAL = { breakfast: BREAKFAST_SLOTS.length, lunch: LUNCH_SLOTS.length, dinner: DINNER_SLOTS.length };
+
+const MEALS_META = [
+  { id: "breakfast", name: "ארוחת בוקר", time: "09:00", timeValue: 9 * 60, icon: Sunrise, theme: "amber" },
+  { id: "lunch", name: "ארוחת צהריים", time: "13:00", timeValue: 13 * 60, icon: Sun, theme: "emerald" },
+  { id: "dinner", name: "ארוחת ערב", time: "20:00", timeValue: 20 * 60, icon: Moon, theme: "indigo" },
+];
+
+const TIPS = [
+  "שתייה על בסיס מים: כ-2 עד 2.5 ליטר ביום",
+  "לא יותר מפעם ביום שתיית דיאט/זירו",
+  "אימוני כוח: 2 בשבוע (אפשר יותר)",
+  "הליכה: חצי שעה ביום",
+  "אחת לשבוע מותרת ארוחה חורגת, בצהריים או בערב",
+];
+
+const STORAGE_KEY = "nutrition-tracker-data";
+
+const TIME_ZONE = "Asia/Jerusalem";
+const DAY_START_HOUR = 3; // the tracker's "day" runs 03:00 to 03:00 Jerusalem time
+
+function jerusalemParts(d) {
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: parseInt(get("hour"), 10),
+    minute: parseInt(get("minute"), 10),
+  };
+}
+
+function jerusalemDateKey(d) {
+  const p = jerusalemParts(d);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function defaultDayLog() {
+  return {
+    breakfast: { choice: { protein: 0, carb: 0, fruit: 0 }, checked: {} },
+    lunch: { choice: { protein: 0, carb: 0, veg1: 0, veg2: 0, fat: 0 }, checked: {} },
+    dinner: { choice: { bread: 0, egg: 0, extra: 0, veg1: 0, veg2: 0, fat: 0 }, checked: {} },
+    extras: [],
+  };
+}
+
+// Always merges saved data with the current shape, so a future structure
+// change can never crash the page or silently drop a saved day's checkmarks.
+function normalizeDayLog(raw) {
+  const base = defaultDayLog();
+  if (!raw) return base;
+  const merged = {};
+  ["breakfast", "lunch", "dinner"].forEach((mealId) => {
+    const rawMeal = raw[mealId] || {};
+    merged[mealId] = {
+      choice: { ...base[mealId].choice, ...(rawMeal.choice || {}) },
+      checked: { ...(rawMeal.checked || {}) },
+    };
+  });
+  merged.extras = Array.isArray(raw.extras) ? raw.extras : [];
+  return merged;
+}
+
+function ProgressRing({ percent, size = 56, strokeWidth = 6, colorClass, trackClass, children }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (Math.max(0, Math.min(100, percent)) / 100) * circumference;
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={strokeWidth} className={trackClass} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={strokeWidth}
+          className={colorClass}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 0.4s ease" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">{children}</div>
+    </div>
+  );
+}
+
+function SlotRow({ slot, checked, choiceIdx, onToggle, onChoose, themeSolid }) {
+  const label = slot.choices[choiceIdx] ?? slot.choices[0];
+  return (
+    <div className={`rounded-xl border p-3 ${checked ? "border-emerald-200 bg-emerald-50" : "border-stone-200 bg-white"}`}>
+      <button onClick={onToggle} className="flex w-full items-center gap-3 text-right">
+        <span
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${
+            checked ? "border-emerald-500 bg-emerald-500" : "border-stone-300"
+          }`}
+        >
+          {checked && <Check className="h-4 w-4 text-white" strokeWidth={3} />}
+        </span>
+        <span className="flex-1">
+          <span className="block text-xs text-stone-400">{slot.label}</span>
+          <span className={`block text-sm ${checked ? "text-emerald-700 line-through decoration-emerald-400" : "text-stone-700"}`}>{label}</span>
+        </span>
+      </button>
+      {slot.hint && <p className="mr-9 mt-1 text-xs text-stone-400">{slot.hint}</p>}
+      {slot.choices.length > 1 && (
+        <div className="mr-9 mt-2 flex gap-2 overflow-x-auto pb-1">
+          {slot.choices.map((c, idx) => (
+            <button
+              key={idx}
+              onClick={() => onChoose(idx)}
+              className={`shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                idx === choiceIdx ? `${themeSolid} border-transparent text-white` : "border-stone-200 bg-white text-stone-500"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NutritionTracker() {
+  const [data, setData] = useState(null);
+  const [expanded, setExpanded] = useState({ breakfast: true, lunch: false, dinner: false });
+  const [tipsOpen, setTipsOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [extraText, setExtraText] = useState("");
+  const [now, setNow] = useState(new Date());
+  const [saveError, setSaveError] = useState(false);
+  const [dayOffset, setDayOffset] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await window.storage.get(STORAGE_KEY);
+        if (!cancelled) setData(res && res.value ? JSON.parse(res.value) : {});
+      } catch (e) {
+        if (!cancelled) setData({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const persist = useCallback(async (next) => {
+    try {
+      const result = await window.storage.set(STORAGE_KEY, JSON.stringify(next));
+      setSaveError(!result);
+    } catch (e) {
+      setSaveError(true);
+    }
+  }, []);
+
+  if (data === null) {
+    return (
+      <div dir="rtl" lang="he" className="flex min-h-screen items-center justify-center bg-stone-50" style={{ fontFamily: "'Heebo', sans-serif" }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap');`}</style>
+        <p className="text-sm text-stone-400">טוען…</p>
+      </div>
+    );
+  }
+
+  const shiftedNow = new Date(now.getTime() - DAY_START_HOUR * 60 * 60 * 1000);
+  const todayKey = jerusalemDateKey(shiftedNow);
+  const nowParts = jerusalemParts(shiftedNow);
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+  const realParts = jerusalemParts(now);
+
+  const selectedDate = new Date(shiftedNow.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+  const selectedKey = jerusalemDateKey(selectedDate);
+  const isViewingToday = selectedKey === todayKey;
+  const dayLog = normalizeDayLog(data[selectedKey]);
+  const todayLog = isViewingToday ? dayLog : normalizeDayLog(data[todayKey]);
+
+  function commit(newDay) {
+    const next = { ...data, [selectedKey]: newDay };
+    setData(next);
+    persist(next);
+  }
+
+  function toggleSlot(mealId, slotKey) {
+    const mealLog = dayLog[mealId];
+    commit({ ...dayLog, [mealId]: { ...mealLog, checked: { ...mealLog.checked, [slotKey]: !mealLog.checked[slotKey] } } });
+  }
+
+  function selectChoice(mealId, slotKey, idx) {
+    const mealLog = dayLog[mealId];
+    commit({ ...dayLog, [mealId]: { ...mealLog, choice: { ...mealLog.choice, [slotKey]: idx } } });
+  }
+
+  function resetMeal(mealId) {
+    const mealLog = dayLog[mealId];
+    commit({ ...dayLog, [mealId]: { ...mealLog, checked: {} } });
+  }
+
+  function addExtra() {
+    const text = extraText.trim();
+    if (!text) return;
+    commit({ ...dayLog, extras: [...(dayLog.extras || []), { text, time: `${String(realParts.hour).padStart(2, "0")}:${String(realParts.minute).padStart(2, "0")}` }] });
+    setExtraText("");
+  }
+
+  function removeExtra(idx) {
+    commit({ ...dayLog, extras: dayLog.extras.filter((_, i) => i !== idx) });
+  }
+
+  function jumpTo(mealId) {
+    setDayOffset(0);
+    setExpanded((e) => ({ ...e, [mealId]: true }));
+    requestAnimationFrame(() => {
+      const el = document.getElementById(mealId);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  const todayStats = MEALS_META.map((m) => {
+    const mealLog = todayLog[m.id];
+    const total = MEAL_TOTAL[m.id];
+    const done = Object.values(mealLog.checked || {}).filter(Boolean).length;
+    return { meal: m, total, done, complete: total > 0 && done === total };
+  });
+
+  const mealsDone = todayStats.filter((s) => s.complete).length;
+  const overallPercent = Math.round((mealsDone / MEALS_META.length) * 100);
+  const pending = todayStats.filter((s) => !s.complete && nowMinutes >= s.meal.timeValue);
+  const upcoming = todayStats.filter((s) => !s.complete && nowMinutes < s.meal.timeValue);
+  const nextMeal = upcoming[0] ? upcoming[0].meal : null;
+
+  const viewStats = MEALS_META.map((m) => {
+    const mealLog = dayLog[m.id];
+    const total = MEAL_TOTAL[m.id];
+    const done = Object.values(mealLog.checked || {}).filter(Boolean).length;
+    return { meal: m, total, done, complete: total > 0 && done === total };
+  });
+
+  const last7 = Array.from({ length: 7 }).map((_, i) => ({
+    offset: -(6 - i),
+    date: new Date(shiftedNow.getTime() + -(6 - i) * 24 * 60 * 60 * 1000),
+  }));
+
+  const monthPrefix = `${nowParts.year}-${nowParts.month}-`;
+  const monthLabel = now.toLocaleDateString("he-IL", { month: "long", year: "numeric", timeZone: TIME_ZONE });
+  const monthCounts = { breakfast: 0, lunch: 0, dinner: 0 };
+  const monthExtras = [];
+  Object.keys(data)
+    .filter((k) => k.startsWith(monthPrefix))
+    .forEach((k) => {
+      const day = data[k];
+      MEALS_META.forEach((m) => {
+        const total = MEAL_TOTAL[m.id];
+        const done = Object.values(day[m.id]?.checked || {}).filter(Boolean).length;
+        if (total > 0 && done === total) monthCounts[m.id]++;
+      });
+      (day.extras || []).forEach((ex) => monthExtras.push({ date: k, text: ex.text }));
+    });
+  monthExtras.sort((a, b) => (a.date < b.date ? -1 : 1));
+  const daysElapsed = parseInt(nowParts.day, 10);
+
+  return (
+    <div dir="rtl" lang="he" className="min-h-screen bg-stone-50 text-stone-800" style={{ fontFamily: "'Heebo', sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap');`}</style>
+      <div className="mx-auto max-w-md px-4 pb-10 pt-6">
+        <header className="mb-5">
+          <p className="text-xs font-medium uppercase tracking-wide text-stone-400">מעקב תזונה יומי</p>
+          <h1 className="text-2xl font-extrabold text-stone-900">היי אברהם 👋</h1>
+          <div className="mt-2 flex items-center justify-between rounded-xl border border-stone-200 bg-white px-1.5 py-1.5">
+            <button
+              onClick={() => setDayOffset((o) => o - 1)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg text-stone-500 active:bg-stone-100"
+              aria-label="יום קודם"
+            >
+              ‹
+            </button>
+            <div className="text-center">
+              <p className="text-sm font-semibold text-stone-700">
+                {selectedDate.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", timeZone: TIME_ZONE })}
+              </p>
+              {!isViewingToday && (
+                <button onClick={() => setDayOffset(0)} className="text-xs text-stone-400 underline underline-offset-2">
+                  חזרה להיום
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setDayOffset((o) => Math.min(0, o + 1))}
+              disabled={isViewingToday}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg ${
+                isViewingToday ? "text-stone-200" : "text-stone-500 active:bg-stone-100"
+              }`}
+              aria-label="יום הבא"
+            >
+              ›
+            </button>
+          </div>
+        </header>
+
+        <section className="mb-5 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-4">
+            <ProgressRing percent={overallPercent} size={64} strokeWidth={7} colorClass="stroke-stone-800" trackClass="stroke-stone-100">
+              <span className="text-sm font-bold text-stone-800">{mealsDone}/3</span>
+            </ProgressRing>
+            <div className="flex-1">
+              {mealsDone === MEALS_META.length ? (
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-700">
+                  <Sparkles className="h-4 w-4" /> סיימת את כל הארוחות היום!
+                </div>
+              ) : pending.length > 0 ? (
+                <div>
+                  <p className="text-sm font-semibold text-orange-700">חסר לך להשלים:</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {pending.map((s) => (
+                      <li key={s.meal.id}>
+                        <button onClick={() => jumpTo(s.meal.id)} className="text-sm text-orange-700 underline decoration-orange-300 underline-offset-2">
+                          {s.meal.name} ({s.meal.time}) · {s.total - s.done} פריטים
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : nextMeal ? (
+                <p className="text-sm text-stone-500">
+                  הארוחה הבאה: <span className="font-semibold text-stone-700">{nextMeal.name}</span> בשעה {nextMeal.time}
+                </p>
+              ) : (
+                <p className="text-sm text-stone-500">בואו נתחיל את היום 🌱</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div className="space-y-3">
+          {viewStats.map(({ meal, total, done, complete }) => {
+            const theme = THEME[meal.theme];
+            const percent = total ? Math.round((done / total) * 100) : 0;
+            const isOpen = expanded[meal.id];
+            const Icon = meal.icon;
+            const isPastDue = isViewingToday && !complete && nowMinutes >= meal.timeValue;
+            const mealLog = dayLog[meal.id];
+            const slots = SLOTS_BY_MEAL[meal.id];
+
+            return (
+              <section
+                id={meal.id}
+                key={meal.id}
+                className={`rounded-2xl border p-4 shadow-sm transition-colors ${isPastDue ? "border-orange-200 bg-orange-50" : "border-stone-200 bg-white"}`}
+              >
+                <button className="flex w-full items-center gap-3" onClick={() => setExpanded((e) => ({ ...e, [meal.id]: !e[meal.id] }))}>
+                  <span className={`flex h-10 w-10 items-center justify-center rounded-full ${theme.chip}`}>
+                    <Icon className="h-5 w-5" />
+                  </span>
+                  <span className="flex-1 text-right">
+                    <span className="block text-sm font-bold text-stone-800">{meal.name}</span>
+                    <span className="block text-xs text-stone-400">
+                      {meal.time}
+                      {complete ? " · הושלם" : isPastDue ? " · באיחור" : ""}
+                    </span>
+                  </span>
+                  <ProgressRing percent={percent} size={38} strokeWidth={4} colorClass={theme.ring} trackClass="stroke-stone-100">
+                    {complete ? (
+                      <Check className="h-4 w-4 text-emerald-600" strokeWidth={3} />
+                    ) : (
+                      <span className="text-xs font-semibold text-stone-500">
+                        {done}/{total}
+                      </span>
+                    )}
+                  </ProgressRing>
+                  <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {isOpen && (
+                  <div className="mt-4 space-y-2">
+                    {slots.map((slot) => (
+                      <SlotRow
+                        key={slot.key}
+                        slot={slot}
+                        checked={!!mealLog.checked[slot.key]}
+                        choiceIdx={mealLog.choice[slot.key] ?? 0}
+                        onToggle={() => toggleSlot(meal.id, slot.key)}
+                        onChoose={(idx) => selectChoice(meal.id, slot.key, idx)}
+                        themeSolid={theme.solid}
+                      />
+                    ))}
+                    {done > 0 && (
+                      <button onClick={() => resetMeal(meal.id)} className="flex items-center gap-1 text-xs text-stone-400">
+                        <RotateCcw className="h-3 w-3" /> איפוס סימונים בארוחה
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+
+        <section className="mt-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-stone-700">אכלת משהו שלא בתפריט?</p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={extraText}
+              onChange={(e) => setExtraText(e.target.value)}
+              placeholder="למשל: פרוסת פיצה"
+              className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-stone-300"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addExtra();
+              }}
+            />
+            <button onClick={addExtra} className="rounded-xl bg-stone-800 px-4 text-sm font-medium text-white">
+              הוסף
+            </button>
+          </div>
+          {dayLog.extras && dayLog.extras.length > 0 && (
+            <ul className="mt-3 space-y-1.5">
+              {dayLog.extras.map((item, idx) => (
+                <li key={idx} className="flex items-center gap-2 rounded-lg bg-stone-50 px-3 py-2 text-sm text-stone-600">
+                  <button onClick={() => removeExtra(idx)} className="text-stone-300">
+                    ✕
+                  </button>
+                  <span className="flex-1 text-right">{item.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="mt-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <p className="mb-3 text-xs font-semibold text-stone-400">7 הימים האחרונים</p>
+          <div className="flex justify-between">
+            {last7.map(({ offset, date: d }, i) => {
+              const key = jerusalemDateKey(d);
+              const dayLogFor = data[key] || null;
+              const isToday = key === todayKey;
+              const isSelected = key === selectedKey;
+              return (
+                <button
+                  key={i}
+                  onClick={() => setDayOffset(offset)}
+                  className={`flex flex-col items-center gap-1.5 rounded-lg p-1 ${isSelected ? "bg-stone-100" : ""}`}
+                >
+                  <span className={`text-xs ${isToday ? "font-bold text-stone-800" : "text-stone-400"}`}>
+                    {d.toLocaleDateString("he-IL", { weekday: "narrow", timeZone: TIME_ZONE })}
+                  </span>
+                  <div className="flex flex-col gap-1">
+                    {MEALS_META.map((m) => {
+                      const mealLog = dayLogFor && dayLogFor[m.id];
+                      const total = MEAL_TOTAL[m.id];
+                      const doneCount = mealLog ? Object.values(mealLog.checked || {}).filter(Boolean).length : 0;
+                      const done = total > 0 && doneCount === total;
+                      return <span key={m.id} className={`h-1.5 w-1.5 rounded-full ${done ? THEME[m.theme].dot : "bg-stone-200"}`} />;
+                    })}
+                  </div>
+                  <span className={`text-xs ${isToday ? "font-bold text-stone-800" : "text-stone-300"}`}>{jerusalemParts(d).day}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <button onClick={() => setReportOpen((o) => !o)} className="flex w-full items-center justify-between">
+            <span className="text-sm font-semibold text-stone-700">דוח חודשי · {monthLabel}</span>
+            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${reportOpen ? "rotate-180" : ""}`} />
+          </button>
+          {reportOpen && (
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {MEALS_META.map((m) => (
+                  <div key={m.id} className="rounded-xl bg-stone-50 p-2">
+                    <p className="text-xs text-stone-400">{m.name}</p>
+                    <p className="text-sm font-bold text-stone-700">
+                      {monthCounts[m.id]}/{daysElapsed}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="mb-1.5 text-xs font-semibold text-stone-400">אכלת שלא בתפריט ({monthExtras.length})</p>
+                {monthExtras.length === 0 ? (
+                  <p className="text-xs text-stone-400">כלום החודש — כל הכבוד</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {monthExtras.map((ex, i) => (
+                      <li key={i} className="text-xs text-stone-600">
+                        <span className="text-stone-400">
+                          {ex.date.slice(8, 10)}/{ex.date.slice(5, 7)}
+                        </span>{" "}
+                        — {ex.text}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="mt-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <button onClick={() => setTipsOpen((o) => !o)} className="flex w-full items-center justify-between">
+            <span className="text-sm font-semibold text-stone-700">טיפים כלליים</span>
+            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${tipsOpen ? "rotate-180" : ""}`} />
+          </button>
+          {tipsOpen && (
+            <ul className="mt-3 space-y-2">
+              {TIPS.map((t, i) => (
+                <li key={i} className="flex gap-2 text-sm text-stone-600">
+                  <span className="text-stone-300">•</span>
+                  {t}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {saveError && <p className="mt-3 text-center text-xs text-rose-600">השמירה נכשלה — בדוק חיבור ונסה שוב.</p>}
+        <p className="mt-4 text-center text-xs text-stone-300">הנתונים נשמרים על המכשיר שלך בלבד</p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<NutritionTracker />);
+</script>
+</body>
+</html>
